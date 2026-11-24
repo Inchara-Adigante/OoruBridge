@@ -8,7 +8,7 @@ from collections.abc import Iterator
 from decimal import Decimal
 
 import psycopg
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
 from oorubridge import db
@@ -40,6 +40,20 @@ class NewCustomer(BaseModel):
     zip: str = Field(pattern=r"^[0-9]{5}$", examples=["95112"])
 
 
+class NewOrder(BaseModel):
+    customer_id: int
+    items: list[CartItem] = Field(min_length=1)
+    idempotency_key: str | None = Field(None, min_length=8, max_length=100,
+                                        description="Send the same key when retrying, to avoid a duplicate order")
+
+
+def merge_quantities(items: list[CartItem]) -> dict[int, int]:
+    qty: dict[int, int] = {}
+    for item in items:                       # the same product twice in a cart counts once
+        qty[item.product_id] = qty.get(item.product_id, 0) + item.quantity
+    return qty
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
@@ -63,9 +77,7 @@ def create_quote(req: QuoteRequest, con=Depends(get_con)) -> dict:
     dest = dests.get(req.destination.upper())
     if dest is None:
         raise HTTPException(400, f"we deliver to {', '.join(sorted(dests))}; got {req.destination!r}")
-    qty: dict[int, int] = {}
-    for item in req.items:                       # the same product twice in a cart counts once
-        qty[item.product_id] = qty.get(item.product_id, 0) + item.quantity
+    qty = merge_quantities(req.items)
     products = db.products_by_id(con, list(qty))
     missing = sorted(set(qty) - set(products))
     if missing:
@@ -97,3 +109,27 @@ def get_customer(customer_id: int, con=Depends(get_con)) -> dict:
     if customer is None:
         raise HTTPException(404, "customer not found")
     return customer
+
+
+@app.post("/orders", status_code=201)
+def place_order(req: NewOrder, response: Response, con=Depends(get_con)) -> dict:
+    """Place an order at today's prices and exchange rate. Retrying with the same idempotency_key is safe."""
+    try:
+        order_id, created = db.place_order(con, req.customer_id, merge_quantities(req.items), req.idempotency_key)
+    except db.NotFound as e:
+        raise HTTPException(404, str(e)) from e
+    except db.OutOfStock as e:
+        raise HTTPException(409, {"message": "not enough stock", "items": e.short}) from e
+    except QuoteError as e:
+        raise HTTPException(422, str(e)) from e
+    if not created:
+        response.status_code = 200
+    return db.get_order(con, order_id)
+
+
+@app.get("/orders/{order_id}")
+def get_order(order_id: int, con=Depends(get_con)) -> dict:
+    order = db.get_order(con, order_id)
+    if order is None:
+        raise HTTPException(404, "order not found")
+    return order

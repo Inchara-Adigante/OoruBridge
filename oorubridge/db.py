@@ -1,5 +1,6 @@
 """Database access: connection settings and the queries the API needs."""
 import os
+from datetime import timedelta
 from decimal import Decimal
 
 import psycopg
@@ -181,3 +182,47 @@ def customer_orders(con, customer_id: int) -> list[dict]:
           FROM shop.orders o JOIN shop.order_items oi USING (order_id)
          WHERE o.customer_id = %s
          GROUP BY o.order_id ORDER BY o.created_at DESC, o.order_id DESC""", (customer_id,)).fetchall()
+
+
+JOURNEY = ["placed", "paid", "packed", "shipped_from_blr", "in_us_customs", "out_for_delivery", "delivered"]
+
+
+class BadTransition(Exception):
+    pass
+
+
+def advance_order(con, order_id: int, status: str, location: str) -> None:
+    """Record the next step of the journey (from the shop, the courier or customs)."""
+    with con.transaction():
+        row = con.execute("SELECT status FROM shop.orders WHERE order_id = %s FOR UPDATE", (order_id,)).fetchone()
+        if row is None:
+            raise NotFound("order not found")
+        try:
+            con.execute("UPDATE shop.orders SET status = %s WHERE order_id = %s", (status, order_id))
+        except psycopg.errors.CheckViolation as e:        # the trigger in migration 005 has the final say
+            raise BadTransition(e.diag.message_primary) from e
+        con.execute("INSERT INTO shop.shipment_events (order_id, status, location) VALUES (%s, %s, %s)",
+                    (order_id, status, location))
+
+
+def tracking(con, order_id: int) -> dict | None:
+    order = get_order(con, order_id)
+    if order is None:
+        return None
+    dest = destinations(con)[order["destination"]]
+    happened = {e["status"]: e["happened_at"] for e in order["timeline"]}
+    status = order["status"]
+    if status == "delivered":
+        eta = {"delivered_on": happened["delivered"].date()}
+    elif "shipped_from_blr" in happened:
+        shipped = happened["shipped_from_blr"].date()
+        eta = {"earliest": shipped + timedelta(days=dest.min_days), "latest": shipped + timedelta(days=dest.max_days)}
+    elif status == "cancelled":
+        eta = None
+    else:
+        eta = {"note": f"ships from Bengaluru within 2 days of payment, then {dest.min_days}-{dest.max_days} days to {dest.city}"}
+    step = JOURNEY.index(status) if status in JOURNEY else None
+    return {"order_id": order_id, "status": status, "destination": dest.city,
+            "progress_pct": None if step is None else round(100 * step / (len(JOURNEY) - 1)),
+            "next_step": JOURNEY[step + 1] if step is not None and step + 1 < len(JOURNEY) else None,
+            "estimated_delivery": eta, "timeline": order["timeline"]}

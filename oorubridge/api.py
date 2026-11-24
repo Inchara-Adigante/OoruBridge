@@ -61,6 +61,11 @@ class PaymentEvent(BaseModel):
     status: str = Field(pattern="^(succeeded|failed)$")
 
 
+class TrackingEvent(BaseModel):
+    status: str = Field(examples=["shipped_from_blr"])
+    location: str = Field(min_length=2, max_length=200, examples=["Bengaluru air cargo hub"])
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
@@ -178,3 +183,25 @@ async def payment_webhook(request: Request, signature: str | None = Header(None,
     except payments.AmountMismatch as e:
         raise HTTPException(422, str(e)) from e
     return {"result": result}
+
+
+@app.post("/orders/{order_id}/events")
+def add_tracking_event(order_id: int, ev: TrackingEvent, con=Depends(get_con)) -> dict:
+    """For the shop, the courier and customs updates: move the order to its next step."""
+    if ev.status not in db.JOURNEY:
+        raise HTTPException(422, f"status must be one of {db.JOURNEY}")
+    try:
+        db.advance_order(con, order_id, ev.status, ev.location)
+    except db.NotFound as e:
+        raise HTTPException(404, str(e)) from e
+    except db.BadTransition as e:
+        raise HTTPException(409, str(e)) from e
+    return db.tracking(con, order_id)
+
+
+@app.get("/orders/{order_id}/tracking")
+def get_tracking(order_id: int, con=Depends(get_con)) -> dict:
+    t = db.tracking(con, order_id)
+    if t is None:
+        raise HTTPException(404, "order not found")
+    return t

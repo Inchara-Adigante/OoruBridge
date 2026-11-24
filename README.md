@@ -9,8 +9,9 @@ Malleshwaram, the masala mill in Basavanagudi, the silk centre in Chickpet) with
 Customers see one honest, all-in price in dollars before they order: item cost, international shipping, estimated
 import duty and fees, plus a delivery window and a warning if something perishable might not survive the trip.
 
-> **Status:** stage 1 done. Customers can browse, get an all-in quote, sign up and place orders that can never
-> oversell a shop's stock. Payments and live tracking are next (see the [roadmap](#roadmap)).
+> **Status:** stage 2 done. Customers can browse, get an all-in quote, sign up, order without overselling, pay
+> through a signed webhook, and follow their parcel from the Bengaluru shop to their door. Seller tools are next
+> (see the [roadmap](#roadmap)).
 
 ## How it works
 
@@ -71,6 +72,9 @@ All amounts use `Decimal` and are rounded per line, so the parts always add up t
 | `GET /orders/{id}` | Order with items, totals and its tracking timeline |
 | `POST /orders/{id}/cancel` | Cancel before the parcel is packed; stock goes back to the shop |
 | `GET /customers/{id}/orders` | Order history, newest first |
+| `POST /webhooks/payments` | Payment provider callback: signed with HMAC-SHA256, safe to deliver twice |
+| `POST /orders/{id}/events` | Shop, courier or customs moves the order to its next step |
+| `GET /orders/{id}/tracking` | Where the parcel is, progress, and estimated delivery dates |
 | `GET /health` | Health check |
 
 Interactive docs at `http://localhost:8000/docs`.
@@ -86,6 +90,29 @@ Interactive docs at `http://localhost:8000/docs`.
 | We only accept orders we can deliver | The customer's ZIP code must start with a prefix of their delivery area (San Jose 950/951, Denver 800–802) |
 | A failed checkout leaves nothing behind | Everything happens in one transaction: out of stock means no order, no stock change |
 
+## Payments and tracking
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> placed
+    placed --> paid : signed payment webhook
+    paid --> packed : shop
+    packed --> shipped_from_blr : Bengaluru air cargo
+    shipped_from_blr --> in_us_customs
+    in_us_customs --> out_for_delivery
+    out_for_delivery --> delivered
+    placed --> cancelled
+    paid --> cancelled : payment flagged for refund
+```
+
+- **Payments:** the provider's webhook must carry a valid HMAC-SHA256 signature. Each event is stored once (by its
+  provider reference), so retries never double-count. The amount must equal the order total. Money that arrives for
+  a cancelled or already-paid order is kept and flagged for refund, never silently lost.
+- **Tracking:** an order moves forward one step at a time. A database trigger enforces it, so no client can skip or
+  reverse a step, and cancelling is only possible before the parcel is packed. Once it leaves Bengaluru, the tracking
+  page shows an estimated delivery window (6–9 days to San Jose, 7–10 to Denver).
+
 ## Run it
 
 Requirements: Python 3.11+ and PostgreSQL 16 (local, or `docker compose up -d`).
@@ -94,7 +121,7 @@ Requirements: Python 3.11+ and PostgreSQL 16 (local, or `docker compose up -d`).
 make venv            # virtualenv + dependencies
 make setup           # create the database, apply migrations, load the sample catalog
 make run             # API on http://localhost:8000
-make test            # 27 tests: pricing, customers, checkout (including a concurrency race), API
+make test            # 40 tests: pricing, customers, checkout (including a concurrency race), payments, tracking
 ```
 
 With Docker's database, first run `export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/oorubridge`.
@@ -105,13 +132,14 @@ With Docker's database, first run `export DATABASE_URL=postgresql://postgres:pos
 OoruBridge/
 ├── oorubridge/
 │   ├── pricing.py        landed-cost rules (pure functions, no database)
-│   ├── db.py             queries and settings
+│   ├── db.py             queries, checkout, cancellation, tracking
+│   ├── payments.py       signed, idempotent payment webhooks
 │   └── api.py            FastAPI app
 ├── db/
-│   ├── migrations/       001 schema · 002 delivery-area ZIP rules · 003 checkout idempotency
+│   ├── migrations/       001 schema · 002 ZIP rules · 003 checkout idempotency · 004 payments · 005 status rules
 │   └── seed/             sample Bengaluru shops and products
 ├── scripts/migrate.py    applies migrations once, with checksums; --seed loads sample data
-├── tests/                pricing, catalog, customers and checkout tests
+├── tests/                pricing, catalog, customers, checkout, payments and tracking tests
 └── docker-compose.yml · Makefile · .github/workflows/ci.yml
 ```
 
@@ -121,8 +149,8 @@ OoruBridge/
 |---|---|---|
 | **0. Setup** | Schema, sample catalog, landed-cost quote API, tests, CI | ✅ Done |
 | **1. Orders** | Customers with delivery-area checks, checkout with prices and exchange rate frozen, stock that can't be oversold, safe retries, cancellation, order history | ✅ Done |
-| **2. Payments & tracking** | Payment webhooks (idempotent), shipment timeline: shop → Bengaluru hub → US customs → doorstep | Next |
-| **3. Seller tools** | Seller onboarding and verification, inventory updates, payouts in INR | Planned |
+| **2. Payments & tracking** | Signed, idempotent payment webhooks; refunds flagged; step-by-step tracking enforced by the database, with delivery estimates | ✅ Done |
+| **3. Seller tools** | Seller onboarding and verification, inventory updates, payouts in INR | Next |
 | **4. Data & insights** | Pipeline from orders and tracking into a warehouse: popular items per city, delivery times, festival demand (Diwali, Ugadi) | Planned |
 | **5. Frontend** | Web storefront in English and Kannada | Planned |
 

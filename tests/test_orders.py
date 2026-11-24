@@ -118,7 +118,8 @@ def test_cancel_returns_stock_and_only_works_before_packing(client, customer):
 
     packed = order(client, customer, [(3, 1)]).json()
     with psycopg.connect(TEST_URL) as con:
-        con.execute("UPDATE shop.orders SET status = 'packed' WHERE order_id = %s", (packed["order_id"],))
+        for status in ("paid", "packed"):                    # orders move one step at a time
+            con.execute("UPDATE shop.orders SET status = %s WHERE order_id = %s", (status, packed["order_id"]))
     r = client.post(f"/orders/{packed['order_id']}/cancel")
     assert r.status_code == 409 and "before it is packed" in r.json()["detail"]
     assert client.post("/orders/9999/cancel").status_code == 404

@@ -48,3 +48,15 @@ def rate_card(con) -> dict[int, Decimal]:
 
 def duty_rates(con) -> dict[str, Decimal]:
     return {r["category"]: r["duty_rate"] for r in con.execute("SELECT category, duty_rate FROM shop.duty_categories")}
+
+
+def create_customer(con, email: str, full_name: str, destination: str, zip_code: str) -> dict:
+    return con.execute("""
+        INSERT INTO shop.customers (email, full_name, destination, zip) VALUES (%s, %s, %s, %s)
+        RETURNING customer_id, email, full_name, destination, zip, created_at""",
+        (email, full_name, destination, zip_code)).fetchone()
+
+
+def get_customer(con, customer_id: int) -> dict | None:
+    return con.execute("SELECT customer_id, email, full_name, destination, zip, created_at "
+                       "FROM shop.customers WHERE customer_id = %s", (customer_id,)).fetchone()

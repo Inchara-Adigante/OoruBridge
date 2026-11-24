@@ -147,3 +147,34 @@ def get_order(con, order_id: int) -> dict | None:
         SELECT status, location, happened_at FROM shop.shipment_events
          WHERE order_id = %s ORDER BY happened_at, status""", (order_id,)).fetchall()
     return order
+
+
+class CannotCancel(Exception):
+    pass
+
+
+def cancel_order(con, order_id: int) -> None:
+    """Cancel before the parcel leaves the shop: stock goes back and the timeline records it."""
+    with con.transaction():
+        row = con.execute("SELECT status FROM shop.orders WHERE order_id = %s FOR UPDATE", (order_id,)).fetchone()
+        if row is None:
+            raise NotFound("order not found")
+        if row["status"] not in ("placed", "paid"):
+            raise CannotCancel(f"order is {row['status']}; it can only be cancelled before it is packed")
+        items = con.execute("SELECT product_id, quantity FROM shop.order_items WHERE order_id = %s "
+                            "ORDER BY product_id", (order_id,)).fetchall()
+        for it in items:                                   # same lock order as checkout: no deadlocks
+            con.execute("UPDATE shop.products SET stock = stock + %s WHERE product_id = %s",
+                        (it["quantity"], it["product_id"]))
+        con.execute("UPDATE shop.orders SET status = 'cancelled' WHERE order_id = %s", (order_id,))
+        con.execute("INSERT INTO shop.shipment_events (order_id, status, location) VALUES (%s, 'cancelled', %s)",
+                    (order_id, "Cancelled by customer"))
+
+
+def customer_orders(con, customer_id: int) -> list[dict]:
+    return con.execute("""
+        SELECT o.order_id, o.status, o.destination, o.total_usd, o.created_at,
+               sum(oi.quantity)::int AS items
+          FROM shop.orders o JOIN shop.order_items oi USING (order_id)
+         WHERE o.customer_id = %s
+         GROUP BY o.order_id ORDER BY o.created_at DESC, o.order_id DESC""", (customer_id,)).fetchall()

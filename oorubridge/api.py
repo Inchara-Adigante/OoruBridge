@@ -8,10 +8,10 @@ from collections.abc import Iterator
 from decimal import Decimal
 
 import psycopg
-from fastapi import Depends, FastAPI, HTTPException, Query, Response
-from pydantic import BaseModel, Field
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
+from pydantic import BaseModel, Field, ValidationError
 
-from oorubridge import db
+from oorubridge import db, payments
 from oorubridge.pricing import QuoteError, quote
 
 app = FastAPI(title="OoruBridge", version="0.1.0",
@@ -52,6 +52,13 @@ def merge_quantities(items: list[CartItem]) -> dict[int, int]:
     for item in items:                       # the same product twice in a cart counts once
         qty[item.product_id] = qty.get(item.product_id, 0) + item.quantity
     return qty
+
+
+class PaymentEvent(BaseModel):
+    provider_ref: str = Field(min_length=4, max_length=100)
+    order_id: int
+    amount_usd: Decimal = Field(ge=0, decimal_places=2)
+    status: str = Field(pattern="^(succeeded|failed)$")
 
 
 @app.get("/health")
@@ -151,3 +158,23 @@ def customer_orders(customer_id: int, con=Depends(get_con)) -> list[dict]:
     if db.get_customer(con, customer_id) is None:
         raise HTTPException(404, "customer not found")
     return db.customer_orders(con, customer_id)
+
+
+@app.post("/webhooks/payments")
+async def payment_webhook(request: Request, signature: str | None = Header(None, alias=payments.SIGNATURE_HEADER),
+                          con=Depends(get_con)) -> dict:
+    """Called by the payment provider. Signed with HMAC-SHA256; safe to deliver more than once."""
+    body = await request.body()
+    if not payments.signature_ok(body, signature):
+        raise HTTPException(401, "invalid signature")
+    try:
+        event = PaymentEvent.model_validate_json(body)
+    except ValidationError as e:
+        raise HTTPException(422, e.errors(include_url=False)) from e
+    try:
+        result = payments.record_payment(con, event.order_id, event.provider_ref, event.amount_usd, event.status)
+    except db.NotFound as e:
+        raise HTTPException(404, str(e)) from e
+    except payments.AmountMismatch as e:
+        raise HTTPException(422, str(e)) from e
+    return {"result": result}

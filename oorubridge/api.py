@@ -7,6 +7,7 @@ Run:  uvicorn oorubridge.api:app --reload      then open http://localhost:8000/d
 from collections.abc import Iterator
 from decimal import Decimal
 
+import psycopg
 from fastapi import Depends, FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
@@ -30,6 +31,13 @@ class CartItem(BaseModel):
 class QuoteRequest(BaseModel):
     destination: str = Field(examples=["SJC"], description="SJC (San Jose) or DEN (Denver)")
     items: list[CartItem] = Field(min_length=1)
+
+
+class NewCustomer(BaseModel):
+    email: str = Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    full_name: str = Field(min_length=1, max_length=200)
+    destination: str = Field(examples=["SJC"])
+    zip: str = Field(pattern=r"^[0-9]{5}$", examples=["95112"])
 
 
 @app.get("/health")
@@ -68,3 +76,24 @@ def create_quote(req: QuoteRequest, con=Depends(get_con)) -> dict:
     except QuoteError as e:
         raise HTTPException(422, str(e)) from e
     return {**q.__dict__, "delivery_days": {"min": q.delivery_days[0], "max": q.delivery_days[1]}}
+
+
+@app.post("/customers", status_code=201)
+def create_customer(req: NewCustomer, con=Depends(get_con)) -> dict:
+    dest = req.destination.upper()
+    if dest not in db.destinations(con):
+        raise HTTPException(400, f"we don't deliver to {req.destination!r} yet")
+    try:
+        return db.create_customer(con, req.email, req.full_name.strip(), dest, req.zip)
+    except psycopg.errors.UniqueViolation as e:
+        raise HTTPException(409, "an account with this email already exists") from e
+    except psycopg.errors.CheckViolation as e:
+        raise HTTPException(422, e.diag.message_primary) from e
+
+
+@app.get("/customers/{customer_id}")
+def get_customer(customer_id: int, con=Depends(get_con)) -> dict:
+    customer = db.get_customer(con, customer_id)
+    if customer is None:
+        raise HTTPException(404, "customer not found")
+    return customer

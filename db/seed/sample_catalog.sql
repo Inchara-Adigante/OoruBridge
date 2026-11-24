@@ -8,9 +8,9 @@ INSERT INTO shop.duty_categories (category, duty_rate, notes) VALUES
     ('handicrafts',   0.04, 'Wooden toys, sandalwood and brass items'),
     ('books',         0.00, 'Printed books');
 
-INSERT INTO shop.destinations (code, city, state, min_days, max_days, surcharge_pct) VALUES
-    ('SJC', 'San Jose', 'CA', 6, 9, 0),
-    ('DEN', 'Denver',   'CO', 7, 10, 8);
+INSERT INTO shop.destinations (code, city, state, min_days, max_days, surcharge_pct, zip_prefixes) VALUES
+    ('SJC', 'San Jose', 'CA', 6, 9, 0, '{950,951}'),        -- San Jose and the rest of Santa Clara County
+    ('DEN', 'Denver',   'CO', 7, 10, 8, '{800,801,802}');   -- Denver metro area
 
 INSERT INTO shop.shipping_rates (max_weight_g, price_usd) VALUES
     (500, 18.00), (1000, 28.00), (2000, 42.00), (5000, 78.00), (10000, 135.00), (20000, 240.00);

@@ -167,6 +167,9 @@ def cancel_order(con, order_id: int) -> None:
             con.execute("UPDATE shop.products SET stock = stock + %s WHERE product_id = %s",
                         (it["quantity"], it["product_id"]))
         con.execute("UPDATE shop.orders SET status = 'cancelled' WHERE order_id = %s", (order_id,))
+        if row["status"] == "paid":                         # the customer gets their money back
+            con.execute("UPDATE shop.payments SET needs_refund = true WHERE order_id = %s AND status = 'succeeded'",
+                        (order_id,))
         con.execute("INSERT INTO shop.shipment_events (order_id, status, location) VALUES (%s, 'cancelled', %s)",
                     (order_id, "Cancelled by customer"))
 

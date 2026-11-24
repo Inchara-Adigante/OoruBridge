@@ -104,3 +104,31 @@ def test_unknown_customer_or_product(client, customer):
     assert order(client, 9999, [(1, 1)]).status_code == 404
     assert order(client, customer, [(999, 1)]).status_code == 404
     assert client.get("/orders/9999").status_code == 404
+
+
+def test_cancel_returns_stock_and_only_works_before_packing(client, customer):
+    before = stock(3)
+    o = order(client, customer, [(3, 4)]).json()
+    assert stock(3) == before - 4
+    r = client.post(f"/orders/{o['order_id']}/cancel")
+    assert r.status_code == 200 and r.json()["status"] == "cancelled"
+    assert [e["status"] for e in r.json()["timeline"]] == ["placed", "cancelled"]
+    assert stock(3) == before
+    assert client.post(f"/orders/{o['order_id']}/cancel").status_code == 409     # already cancelled
+
+    packed = order(client, customer, [(3, 1)]).json()
+    with psycopg.connect(TEST_URL) as con:
+        con.execute("UPDATE shop.orders SET status = 'packed' WHERE order_id = %s", (packed["order_id"],))
+    r = client.post(f"/orders/{packed['order_id']}/cancel")
+    assert r.status_code == 409 and "before it is packed" in r.json()["detail"]
+    assert client.post("/orders/9999/cancel").status_code == 404
+
+
+def test_order_history_newest_first(client):
+    cid = client.post("/customers", json={"email": "dev@example.com", "full_name": "Dev Shetty",
+                                          "destination": "SJC", "zip": "95112"}).json()["customer_id"]
+    first = order(client, cid, [(12, 1)]).json()["order_id"]
+    second = order(client, cid, [(11, 1), (4, 2)]).json()["order_id"]
+    history = client.get(f"/customers/{cid}/orders").json()
+    assert [(h["order_id"], h["items"]) for h in history] == [(second, 3), (first, 1)]
+    assert client.get("/customers/9999/orders").status_code == 404

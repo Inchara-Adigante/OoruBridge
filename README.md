@@ -9,8 +9,8 @@ Malleshwaram, the masala mill in Basavanagudi, the silk centre in Chickpet) with
 Customers see one honest, all-in price in dollars before they order: item cost, international shipping, estimated
 import duty and fees, plus a delivery window and a warning if something perishable might not survive the trip.
 
-> **Status:** initial setup. The catalog and the landed-cost quote API work end to end; ordering, payments and
-> tracking are next (see the [roadmap](#roadmap)).
+> **Status:** stage 1 done. Customers can browse, get an all-in quote, sign up and place orders that can never
+> oversell a shop's stock. Payments and live tracking are next (see the [roadmap](#roadmap)).
 
 ## How it works
 
@@ -66,9 +66,25 @@ All amounts use `Decimal` and are rounded per line, so the parts always add up t
 | `GET /products?category=&area=&q=&max_price_inr=` | Browse the catalog by category, Bengaluru area, search text or price |
 | `GET /destinations` | Cities we deliver to, with delivery windows |
 | `POST /quotes` | All-in landed cost for a cart |
+| `POST /customers` · `GET /customers/{id}` | Sign up; the ZIP code must be in the chosen delivery area |
+| `POST /orders` | Checkout at today's prices and exchange rate; send an `idempotency_key` to retry safely |
+| `GET /orders/{id}` | Order with items, totals and its tracking timeline |
+| `POST /orders/{id}/cancel` | Cancel before the parcel is packed; stock goes back to the shop |
+| `GET /customers/{id}/orders` | Order history, newest first |
 | `GET /health` | Health check |
 
 Interactive docs at `http://localhost:8000/docs`.
+
+## Checkout guarantees
+
+| Guarantee | How |
+|---|---|
+| A shop's stock is never oversold, even when many people order the last item at the same moment | Product rows are locked `FOR UPDATE` during checkout; tested with 20 concurrent shoppers for 5 jars: exactly 5 orders |
+| No deadlocks between checkouts | Every checkout and cancellation locks products in the same order (by id) |
+| An order never changes after it's placed | Prices and the INR/USD rate are copied into the order; totals must add up (`CHECK` constraint) |
+| A retried "Place order" never creates a second order | Optional idempotency key, unique per customer; two simultaneous retries also return the same order |
+| We only accept orders we can deliver | The customer's ZIP code must start with a prefix of their delivery area (San Jose 950/951, Denver 800–802) |
+| A failed checkout leaves nothing behind | Everything happens in one transaction: out of stock means no order, no stock change |
 
 ## Run it
 
@@ -78,7 +94,7 @@ Requirements: Python 3.11+ and PostgreSQL 16 (local, or `docker compose up -d`).
 make venv            # virtualenv + dependencies
 make setup           # create the database, apply migrations, load the sample catalog
 make run             # API on http://localhost:8000
-make test            # 15 tests: pricing rules + API against a real test database
+make test            # 27 tests: pricing, customers, checkout (including a concurrency race), API
 ```
 
 With Docker's database, first run `export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/oorubridge`.
@@ -92,10 +108,10 @@ OoruBridge/
 │   ├── db.py             queries and settings
 │   └── api.py            FastAPI app
 ├── db/
-│   ├── migrations/       schema: sellers, products, destinations, rate cards, orders, tracking
+│   ├── migrations/       001 schema · 002 delivery-area ZIP rules · 003 checkout idempotency
 │   └── seed/             sample Bengaluru shops and products
 ├── scripts/migrate.py    applies migrations once, with checksums; --seed loads sample data
-├── tests/                pricing and API tests
+├── tests/                pricing, catalog, customers and checkout tests
 └── docker-compose.yml · Makefile · .github/workflows/ci.yml
 ```
 
@@ -104,8 +120,8 @@ OoruBridge/
 | Stage | Scope | Status |
 |---|---|---|
 | **0. Setup** | Schema, sample catalog, landed-cost quote API, tests, CI | ✅ Done |
-| **1. Orders** | Customers, checkout with the exchange rate frozen at order time, stock reservation without overselling | Next |
-| **2. Payments & tracking** | Payment webhooks (idempotent), shipment timeline: shop → Bengaluru hub → US customs → doorstep | Planned |
+| **1. Orders** | Customers with delivery-area checks, checkout with prices and exchange rate frozen, stock that can't be oversold, safe retries, cancellation, order history | ✅ Done |
+| **2. Payments & tracking** | Payment webhooks (idempotent), shipment timeline: shop → Bengaluru hub → US customs → doorstep | Next |
 | **3. Seller tools** | Seller onboarding and verification, inventory updates, payouts in INR | Planned |
 | **4. Data & insights** | Pipeline from orders and tracking into a warehouse: popular items per city, delivery times, festival demand (Diwali, Ugadi) | Planned |
 | **5. Frontend** | Web storefront in English and Kannada | Planned |

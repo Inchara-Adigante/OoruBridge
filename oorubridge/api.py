@@ -133,3 +133,21 @@ def get_order(order_id: int, con=Depends(get_con)) -> dict:
     if order is None:
         raise HTTPException(404, "order not found")
     return order
+
+
+@app.post("/orders/{order_id}/cancel")
+def cancel_order(order_id: int, con=Depends(get_con)) -> dict:
+    try:
+        db.cancel_order(con, order_id)
+    except db.NotFound as e:
+        raise HTTPException(404, str(e)) from e
+    except db.CannotCancel as e:
+        raise HTTPException(409, str(e)) from e
+    return db.get_order(con, order_id)
+
+
+@app.get("/customers/{customer_id}/orders")
+def customer_orders(customer_id: int, con=Depends(get_con)) -> list[dict]:
+    if db.get_customer(con, customer_id) is None:
+        raise HTTPException(404, "customer not found")
+    return db.customer_orders(con, customer_id)
